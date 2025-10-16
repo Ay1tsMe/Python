@@ -10,7 +10,16 @@ wait 1 second to capture the lowest (occupied) value, then print a THRESHOLD[64]
 import argparse
 import statistics
 import time
+import numpy
+import sounddevice
 from typing import List
+
+# Sound generation settings
+fs = 44100 # sample rate
+duration = 0.2
+frequency = 392 # Hz
+
+samples = numpy.sin(2 * numpy.pi * numpy.arange(fs * duration) * frequency / fs)
 
 try:
     import serial  # pyserial
@@ -122,6 +131,8 @@ def main():
     print("Collecting baseline (unoccupied) readings...")
     empty = _average_readings(ser, args.samples, args.delay)
     print("Baseline captured.\n")
+    sounddevice.play(samples, fs)
+    sounddevice.wait()
 
     occupied = [0] * 64
     thresholds = [0] * 64
@@ -130,6 +141,8 @@ def main():
         print(f"\n=== Square {sq} ===")
         occ_val = _wait_for_piece(ser, i, empty[i])
         occupied[i] = occ_val
+        sounddevice.play(samples, fs)
+        sounddevice.wait()
         print(f"  Empty: {empty[i]:>4} | Occupied: {occupied[i]:>4}")
 
         print("  Waiting for removal...")
