@@ -28,8 +28,7 @@ except ImportError:
 
 FILES = ['A','B','C','D','E','F','G','H']
 RANKS = ['1','2','3','4','5','6','7','8']
-SQUARES = [f"{f}{r}" for r in RANKS for f in FILES]  # A1..H8 order
-
+SQUARES = [f"{f}{r}" for f in FILES for r in RANKS]  # A1..A8 order labels
 
 def _read_snapshot(ser: serial.Serial, timeout_s: float = 1.0, retries: int = 3) -> List[int]:
     """Request one CSV snapshot ('?') and parse 64 ints, retrying if needed."""
@@ -75,56 +74,6 @@ def _average_readings(ser: serial.Serial, samples: int, delay_s: float) -> List[
     return [int(statistics.mean(b)) for b in buckets]
 
 
-def _wait_for_piece(ser: serial.Serial, idx: int, baseline: int, drop_threshold: int = 50) -> int:
-    """Wait for the ADC value at square `idx` to drop significantly from baseline, then sample for 1s."""
-    print("  Waiting for piece placement...")
-    while True:
-        vals = _read_snapshot(ser)
-        v = vals[idx]
-        if baseline - v > drop_threshold:
-            print("  Piece detected, waiting 1s to stabilise...")
-            t_end = time.time() + 1.0
-            lowest = v
-            while time.time() < t_end:
-                vals2 = _read_snapshot(ser)
-                v2 = vals2[idx]
-                if v2 < lowest:
-                    lowest = v2
-                time.sleep(0.05)
-            return lowest
-        time.sleep(0.05)
-
-def _wait_for_row(ser: serial.Serial, indices: List[int], baselines: List[int], drop_threshold: int = 50) -> List[int]:
-    """Wait until all 8 indices in this row drop from baseline, then sample each for 1s and return their lowest values."""
-    print("  Waiting for row placement...")
-    while True:
-        vals = _read_snapshot(ser)
-        drops = [baselines[j] - vals[indices[j]] > drop_threshold for j in range(8)]
-        if all(drops):
-            print("  Row detected, waiting 1s to stabilise...")
-            t_end = time.time() + 1.0
-            lowest = [vals[idx] for idx in indices]
-            while time.time() < t_end:
-                vals2 = _read_snapshot(ser)
-                for j, idx in enumerate(indices):
-                    if vals2[idx] < lowest[j]:
-                        lowest[j] = vals2[idx]
-                time.sleep(0.05)
-            return lowest
-        time.sleep(0.05)
-
-
-def _wait_for_removal(ser: serial.Serial, indices: List[int], baselines: List[int], tolerance: int = 30):
-    """Wait until all 8 indices in this row return near baseline (row cleared)."""
-    print("  Waiting for removal...")
-    while True:
-        vals = _read_snapshot(ser)
-        restored = [abs(vals[idx] - baselines[j]) < tolerance for j, idx in enumerate(indices)]
-        if all(restored):
-            return
-        time.sleep(0.05)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -135,7 +84,7 @@ def main():
     parser.add_argument('-b', '--baud-rate', default=9600, type=int,
                         help="Board's baud rate")
     parser.add_argument('-s', '--squares', default='',
-                        help='Comma-separated squares to calibrate (e.g. "a1,c4,d5"). If omitted, calibrates by rows.')
+                        help='Comma-separated squares to calibrate (e.g. "a1,c4,d5"). If omitted, calibrates by ranks (A1–H1, A2–H2, ...).')
     args = parser.parse_args()
 
     # Defaults for averaging snapshots
@@ -159,63 +108,67 @@ def main():
     occupied = [0] * 64
     thresholds = [0] * 64
 
-    # If specific squares were requested, calibrate only those, otherwise do rows.
+    # If specific squares were requested, calibrate only those, otherwise do ranks.
     if args.squares.strip():
-        # Parse and validate squares
+        # --- Manual individual-square calibration ---
         raw_targets = [s.strip().upper() for s in args.squares.split(',') if s.strip()]
-        # De-duplicate while preserving order
         seen = set()
         targets = [t for t in raw_targets if not (t in seen or seen.add(t))]
 
-        invalid = [t for t in targets if t not in SQUARES]
+        # Validate format LETTER + rank 1..8
+        def _valid_sq(t: str) -> bool:
+            return len(t) >= 2 and t[0] in FILES and t[1:].isdigit() and 1 <= int(t[1:]) <= 8
+
+        invalid = [t for t in targets if not _valid_sq(t)]
         if invalid:
             raise SystemExit(f"Invalid square(s): {', '.join(invalid)}. Use like -s a1,c4,d5")
 
         for sq in targets:
-            idx = SQUARES.index(sq)
-            file_letter, rank = sq[0], sq[1:]
-            print(f"\n=== Square {sq} ===")
+            file_letter = sq[0]
+            rank_n = int(sq[1:])
+            # rank-major index: A1,B1,...,H1, A2,B2,...,H8
+            idx = (rank_n - 1) * 8 + FILES.index(file_letter)
 
-            # Capture lowest (occupied) using the single-square helper
-            occ_val = _wait_for_piece(ser, idx, empty[idx])
-            occupied[idx] = occ_val
+            print(f"\n=== Square {sq} ===")
+            input(f"Place a piece on {sq}, then press Enter to capture...")
+
+            vals = _read_snapshot(ser)  # single request, manual trigger
+            occupied[idx] = vals[idx]
 
             sounddevice.play(samples, fs)
             sounddevice.wait()
 
             print(f"  {sq}: Empty: {empty[idx]:>4} | Occupied: {occupied[idx]:>4}")
 
-            # Wait for removal (reuse the row-removal function with one element)
-            _wait_for_removal(ser, [idx], [empty[idx]])
+            input("Remove the piece, then press Enter to continue...")
 
-            # Threshold for this square
             hi, lo = max(empty[idx], occupied[idx]), min(empty[idx], occupied[idx])
             thresholds[idx] = int((hi + lo) / 2)
 
     else:
-        # --- Default: row-by-row calibration ---
+        # --- Default: rank-by-rank calibration (A1–H1, A2–H2, ...) ---
         for f_idx, file_letter in enumerate(FILES):
-            print(f"\n=== Row {file_letter} (Squares {file_letter}1-{file_letter}8) ===")
-            # Indices for A1–A8, B1–B8, ... in SQUARES order (A1,B1,...,H1, A2,B2,...):
-            indices = [k * 8 + f_idx for k in range(8)]  # e.g., A-row: [0, 8, 16, 24, 32, 40, 48, 56]
-            baselines = [empty[idx] for idx in indices]
+            rank = f_idx + 1  # 1..8
+            print(f"\n=== Rank {rank} (Squares A{rank}-H{rank}) ===")
+            input(f"Place pieces on A{rank}-H{rank}, then press Enter to capture...")
+            vals = _read_snapshot(ser)  # one request only
 
-            # Wait for the whole row, capture lowest (occupied) values over 1s
-            lowest_vals = _wait_for_row(ser, indices, baselines)
-            for j, idx in enumerate(indices):
-                occupied[idx] = lowest_vals[j]
+            # Indices for this rank in rank-major order
+            indices = [(rank - 1) * 8 + k for k in range(8)]
 
             sounddevice.play(samples, fs)
             sounddevice.wait()
 
-            # Print the values we got for the user
+            # Use the single snapshot as occupied readings
             for j, idx in enumerate(indices):
-                print(f"  {file_letter}{j+1}: Empty: {empty[idx]:>4} | Occupied: {occupied[idx]:>4}")
+                sq_label = f"{FILES[j]}{rank}"
+                occupied[idx] = vals[idx]
+                print(f"  {sq_label}: Empty: {empty[idx]:>4} | Occupied: {occupied[idx]:>4}")
 
-            # Wait until the whole row is cleared
-            _wait_for_removal(ser, indices, baselines)
+            # ask user to clear this rank before proceeding
+            input("Remove pieces from this rank, then press Enter to continue...")
 
-            # Compute thresholds for this row
+            # Compute thresholds for this rank
             for idx in indices:
                 hi, lo = max(empty[idx], occupied[idx]), min(empty[idx], occupied[idx])
                 thresholds[idx] = int((hi + lo) / 2)
@@ -236,3 +189,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
