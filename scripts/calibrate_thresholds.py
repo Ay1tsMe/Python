@@ -82,7 +82,7 @@ def _wait_for_piece(ser: serial.Serial, idx: int, baseline: int, drop_threshold:
         vals = _read_snapshot(ser)
         v = vals[idx]
         if baseline - v > drop_threshold:
-            print("  Piece detected, waiting 1s to stabilize...")
+            print("  Piece detected, waiting 1s to stabilise...")
             t_end = time.time() + 1.0
             lowest = v
             while time.time() < t_end:
@@ -94,13 +94,33 @@ def _wait_for_piece(ser: serial.Serial, idx: int, baseline: int, drop_threshold:
             return lowest
         time.sleep(0.05)
 
-
-def _wait_for_removal(ser: serial.Serial, idx: int, baseline: int, tolerance: int = 30):
-    """Wait until the ADC value returns near baseline (piece removed)."""
+def _wait_for_row(ser: serial.Serial, indices: List[int], baselines: List[int], drop_threshold: int = 50) -> List[int]:
+    """Wait until all 8 indices in this row drop from baseline, then sample each for 1s and return their lowest values."""
+    print("  Waiting for row placement...")
     while True:
         vals = _read_snapshot(ser)
-        v = vals[idx]
-        if abs(v - baseline) < tolerance:
+        drops = [baselines[j] - vals[indices[j]] > drop_threshold for j in range(8)]
+        if all(drops):
+            print("  Row detected, waiting 1s to stabilise...")
+            t_end = time.time() + 1.0
+            lowest = [vals[idx] for idx in indices]
+            while time.time() < t_end:
+                vals2 = _read_snapshot(ser)
+                for j, idx in enumerate(indices):
+                    if vals2[idx] < lowest[j]:
+                        lowest[j] = vals2[idx]
+                time.sleep(0.05)
+            return lowest
+        time.sleep(0.05)
+
+
+def _wait_for_removal(ser: serial.Serial, indices: List[int], baselines: List[int], tolerance: int = 30):
+    """Wait until all 8 indices in this row return near baseline (row cleared)."""
+    print("  Waiting for removal...")
+    while True:
+        vals = _read_snapshot(ser)
+        restored = [abs(vals[idx] - baselines[j]) < tolerance for j, idx in enumerate(indices)]
+        if all(restored):
             return
         time.sleep(0.05)
 
@@ -137,19 +157,31 @@ def main():
     occupied = [0] * 64
     thresholds = [0] * 64
 
-    for i, sq in enumerate(SQUARES):
-        print(f"\n=== Square {sq} ===")
-        occ_val = _wait_for_piece(ser, i, empty[i])
-        occupied[i] = occ_val
+    for f_idx, file_letter in enumerate(FILES):
+        print(f"\n=== Row {file_letter} (Squares {file_letter}1-{file_letter}8) ===")
+        # Indices for A1–A8, B1–B8, ... in your SQUARES order (A1,B1,...,H1, A2,B2,...):
+        indices = [k * 8 + f_idx for k in range(8)]  # e.g., A-row: [0, 8, 16, 24, 32, 40, 48, 56]
+        baselines = [empty[idx] for idx in indices]
+
+        # Wait for the whole row, capture lowest (occupied) values over 1s
+        lowest_vals = _wait_for_row(ser, indices, baselines)
+        for j, idx in enumerate(indices):
+            occupied[idx] = lowest_vals[j]
+
         sounddevice.play(samples, fs)
         sounddevice.wait()
-        print(f"  Empty: {empty[i]:>4} | Occupied: {occupied[i]:>4}")
 
-        print("  Waiting for removal...")
-        _wait_for_removal(ser, i, empty[i])
+        # Print the values we got for the user
+        for j, idx in enumerate(indices):
+            print(f"  {file_letter}{j+1}: Empty: {empty[idx]:>4} | Occupied: {occupied[idx]:>4}")
 
-        hi, lo = max(empty[i], occupied[i]), min(empty[i], occupied[i])
-        thresholds[i] = int((hi + lo) / 2)
+        # Wait until the whole row is cleared
+        _wait_for_row_removal(ser, indices, baselines)
+
+        # Compute thresholds for this row
+        for idx in indices:
+            hi, lo = max(empty[idx], occupied[idx]), min(empty[idx], occupied[idx])
+            thresholds[idx] = int((hi + lo) / 2)
 
     print("\nCalibration complete!\n")
     print("// Paste this into your firmware (.ino):")
