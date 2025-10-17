@@ -87,6 +87,13 @@ def main():
                         help='Comma-separated squares to calibrate (e.g. "a1,c4,d5"). If omitted, calibrates by ranks (A1–H1, A2–H2, ...).')
     args = parser.parse_args()
 
+    # Choose mode
+    mode = input("Calibration mode — [G]lobal single threshold or [I]ndividual per-square? [G/i]: ").strip().lower()
+    if mode == '':
+        mode = 'g'
+    if mode not in ('g', 'i'):
+        raise SystemExit("Please enter 'g' for global or 'i' for individual.")
+
     # Defaults for averaging snapshots
     n_samples = 15
     delay_s = 0.05
@@ -175,13 +182,27 @@ def main():
 
     print("\nCalibration complete!\n")
     print("// Paste this into your firmware (.ino):")
-    print("unsigned short THRESHOLD[64] = {")
-    for r in range(8):
-        row = ', '.join(f"{t:4}" for t in thresholds[r*8:(r+1)*8])
-        file_letter = FILES[r] # A..H
-        squares_range = f"{file_letter}1-{file_letter}8"
-        print(f"  // {squares_range}\n {row},")
-    print("};")
+
+
+    if mode == 'g':
+        # Single global threshold: average of per-square midpoints
+        # (equivalently: mean of thresholds[] we computed above)
+        # If we only did some squares (individual path), fall back to non-zeros.
+        nonzero = [t for t in thresholds if t > 0]
+        if not nonzero:
+            raise SystemExit("No thresholds collected to compute a global value.")
+        global_threshold = int(round(statistics.mean(nonzero)))
+
+        print(f"const unsigned short THRESHOLD = {global_threshold};")
+
+    else:
+        print("unsigned short THRESHOLD[64] = {")
+        for r in range(8):
+            row = ', '.join(f"{t:4}" for t in thresholds[r*8:(r+1)*8])
+            file_letter = FILES[r] # A..H
+            squares_range = f"{file_letter}1-{file_letter}8"
+            print(f"  // {squares_range}\n {row},")
+        print("};")
 
     ser.close()
     print("\nAll done.")
