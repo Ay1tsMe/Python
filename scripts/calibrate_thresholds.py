@@ -156,7 +156,9 @@ def main():
     print("unsigned short THRESHOLD[64] = {")
     for r in range(8):
         row = ', '.join(f"{t:4}" for t in thresholds[r*8:(r+1)*8])
-        print(f"  // Rank {r+1}\n  {row},")
+        file_letter = FILES[r] # A..H
+        squares_range = f"{file_letter}1-{file_letter}8"
+        print(f"  // {squares_range}\n {row},")
     print("};")
 
     ser.close()
