@@ -134,11 +134,13 @@ def main():
                         help='Serial port the board is connected to')
     parser.add_argument('-b', '--baud-rate', default=9600, type=int,
                         help="Board's baud rate")
-    parser.add_argument('--samples', default=15, type=int,
-                        help='Snapshots to average for empty baseline')
-    parser.add_argument('--delay', default=0.05, type=float,
-                        help='Delay between snapshots (s)')
+    parser.add_argument('-s', '--squares', default='',
+                        help='Comma-separated squares to calibrate (e.g. "a1,c4,d5"). If omitted, calibrates by rows.')
     args = parser.parse_args()
+
+    # Defaults for averaging snapshots
+    n_samples = 15
+    delay_s = 0.05
 
     print(f"Connecting to LiBoard on {args.port} at {args.baud_rate} baud...")
     try:
@@ -149,7 +151,7 @@ def main():
     time.sleep(2.0)
     input("\nMake sure the board is COMPLETELY EMPTY, then press Enter...")
     print("Collecting baseline (unoccupied) readings...")
-    empty = _average_readings(ser, args.samples, args.delay)
+    empty = _average_readings(ser, n_samples, delay_s)
     print("Baseline captured.\n")
     sounddevice.play(samples, fs)
     sounddevice.wait()
@@ -157,31 +159,66 @@ def main():
     occupied = [0] * 64
     thresholds = [0] * 64
 
-    for f_idx, file_letter in enumerate(FILES):
-        print(f"\n=== Row {file_letter} (Squares {file_letter}1-{file_letter}8) ===")
-        # Indices for A1–A8, B1–B8, ... in your SQUARES order (A1,B1,...,H1, A2,B2,...):
-        indices = [k * 8 + f_idx for k in range(8)]  # e.g., A-row: [0, 8, 16, 24, 32, 40, 48, 56]
-        baselines = [empty[idx] for idx in indices]
+    # If specific squares were requested, calibrate only those, otherwise do rows.
+    if args.squares.strip():
+        # Parse and validate squares
+        raw_targets = [s.strip().upper() for s in args.squares.split(',') if s.strip()]
+        # De-duplicate while preserving order
+        seen = set()
+        targets = [t for t in raw_targets if not (t in seen or seen.add(t))]
 
-        # Wait for the whole row, capture lowest (occupied) values over 1s
-        lowest_vals = _wait_for_row(ser, indices, baselines)
-        for j, idx in enumerate(indices):
-            occupied[idx] = lowest_vals[j]
+        invalid = [t for t in targets if t not in SQUARES]
+        if invalid:
+            raise SystemExit(f"Invalid square(s): {', '.join(invalid)}. Use like -s a1,c4,d5")
 
-        sounddevice.play(samples, fs)
-        sounddevice.wait()
+        for sq in targets:
+            idx = SQUARES.index(sq)
+            file_letter, rank = sq[0], sq[1:]
+            print(f"\n=== Square {sq} ===")
 
-        # Print the values we got for the user
-        for j, idx in enumerate(indices):
-            print(f"  {file_letter}{j+1}: Empty: {empty[idx]:>4} | Occupied: {occupied[idx]:>4}")
+            # Capture lowest (occupied) using the single-square helper
+            occ_val = _wait_for_piece(ser, idx, empty[idx])
+            occupied[idx] = occ_val
 
-        # Wait until the whole row is cleared
-        _wait_for_row_removal(ser, indices, baselines)
+            sounddevice.play(samples, fs)
+            sounddevice.wait()
 
-        # Compute thresholds for this row
-        for idx in indices:
+            print(f"  {sq}: Empty: {empty[idx]:>4} | Occupied: {occupied[idx]:>4}")
+
+            # Wait for removal (reuse the row-removal function with one element)
+            _wait_for_removal(ser, [idx], [empty[idx]])
+
+            # Threshold for this square
             hi, lo = max(empty[idx], occupied[idx]), min(empty[idx], occupied[idx])
             thresholds[idx] = int((hi + lo) / 2)
+
+    else:
+        # --- Default: row-by-row calibration ---
+        for f_idx, file_letter in enumerate(FILES):
+            print(f"\n=== Row {file_letter} (Squares {file_letter}1-{file_letter}8) ===")
+            # Indices for A1–A8, B1–B8, ... in SQUARES order (A1,B1,...,H1, A2,B2,...):
+            indices = [k * 8 + f_idx for k in range(8)]  # e.g., A-row: [0, 8, 16, 24, 32, 40, 48, 56]
+            baselines = [empty[idx] for idx in indices]
+
+            # Wait for the whole row, capture lowest (occupied) values over 1s
+            lowest_vals = _wait_for_row(ser, indices, baselines)
+            for j, idx in enumerate(indices):
+                occupied[idx] = lowest_vals[j]
+
+            sounddevice.play(samples, fs)
+            sounddevice.wait()
+
+            # Print the values we got for the user
+            for j, idx in enumerate(indices):
+                print(f"  {file_letter}{j+1}: Empty: {empty[idx]:>4} | Occupied: {occupied[idx]:>4}")
+
+            # Wait until the whole row is cleared
+            _wait_for_removal(ser, indices, baselines)
+
+            # Compute thresholds for this row
+            for idx in indices:
+                hi, lo = max(empty[idx], occupied[idx]), min(empty[idx], occupied[idx])
+                thresholds[idx] = int((hi + lo) / 2)
 
     print("\nCalibration complete!\n")
     print("// Paste this into your firmware (.ino):")
