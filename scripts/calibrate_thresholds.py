@@ -89,6 +89,22 @@ def push_threshold_global(ser: serial.Serial, value: int):
         print(f"\n[WARN] Failed to push threshold to board: {e}")
 
 
+def push_threshold_individual(ser: serial.Serial, value: List[int]):
+    """Apply individual thresholds to the LiBoard via its calibration mode."""
+    try:
+        ser.reset_input_buffer()
+        ser.write(b'c')                 # tell board to enter calibration mode
+        ser.flush()
+        time.sleep(0.1)                 # small delay to let it switch
+
+        ser.write(f"{value}\n".encode("ascii"))  # send threshold value
+        ser.flush()
+        time.sleep(0.2)                 # brief wait for Arduino to finish
+        print("\n[OK] Pushed individual thresholds to board.")
+    except Exception as e:
+        print(f"\n[WARN] Failed to push threshold to board: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -212,12 +228,13 @@ def main():
 
     else:
         print("unsigned short THRESHOLD[64] = {")
-        for r in range(8):
-            row = ', '.join(f"{t:4}" for t in thresholds[r*8:(r+1)*8])
-            file_letter = FILES[r] # A..H
-            squares_range = f"{file_letter}1-{file_letter}8"
-            print(f"  // {squares_range}\n {row},")
-        print("};")
+        # Output in A1–H1, A2–H2, … A8–H8 order
+        result = []
+        for rank in range(8):      # ranks 1–8
+            for file in range(8):  # files A–H
+                idx = rank * 8 + file
+                result.append(thresholds[idx])
+        print(','.join(str(t) for t in result))
 
     ser.close()
     print("\nAll done.")
