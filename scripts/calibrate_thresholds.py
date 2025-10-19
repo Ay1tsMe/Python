@@ -1,4 +1,4 @@
-#! /usr/bin/python3
+
 
 """Automatically calibrate LiBoard photoresistor thresholds via USB.
 
@@ -12,6 +12,7 @@ import statistics
 import time
 import numpy
 import sounddevice
+import serial
 from typing import List
 
 # Sound generation settings
@@ -20,11 +21,6 @@ duration = 0.2
 frequency = 392 # Hz
 
 samples = numpy.sin(2 * numpy.pi * numpy.arange(fs * duration) * frequency / fs)
-
-try:
-    import serial  # pyserial
-except ImportError:
-    raise SystemExit("This script requires pyserial. Install with:  pip install pyserial")
 
 FILES = ['A','B','C','D','E','F','G','H']
 RANKS = ['1','2','3','4','5','6','7','8']
@@ -72,6 +68,44 @@ def _average_readings(ser: serial.Serial, samples: int, delay_s: float) -> List[
             buckets[i].append(v)
         time.sleep(delay_s)
     return [int(statistics.mean(b)) for b in buckets]
+
+def push_threshold_global(ser: serial.Serial, value: int):
+    """Send a global threshold value to the LiBoard via its calibration mode."""
+    try:
+        ser.reset_input_buffer()
+        ser.write(b'c')                 # tell board to enter calibration mode
+        ser.flush()
+        time.sleep(0.1)                 # small delay to let it switch
+
+        ser.write(f"{value}\n".encode("ascii"))  # send threshold value
+        ser.flush()
+        time.sleep(0.2)                 # brief wait for Arduino to finish
+        print(f"\n[OK] Pushed global threshold {value} to board.")
+    except Exception as e:
+        print(f"\n[WARN] Failed to push threshold to board: {e}")
+
+
+def push_threshold_individual(ser: serial.Serial, values: List[int]):
+    """Apply individual thresholds to the LiBoard via its calibration mode."""
+
+    if len(values) != 64:
+        raise ValueError("Need exactly 64 threshold values")
+
+    # Format: plain CSV (no brackets/spaces required; spaces tolerated by Arduino)
+    csv_line = ",".join(str(int(v)) for v in values) + "\n"
+
+    try:
+        ser.reset_input_buffer()
+        ser.write(b'c')                 # tell board to enter calibration mode
+        ser.flush()
+        time.sleep(0.1)                 # small delay to let it switch
+
+        ser.write(csv_line.encode("ascii"))  # send threshold value
+        ser.flush()
+        time.sleep(0.2)                 # brief wait for Arduino to finish
+        print("\n[OK] Pushed individual thresholds to board.")
+    except Exception as e:
+        print(f"\n[WARN] Failed to push threshold to board: {e}")
 
 
 def main():
@@ -181,8 +215,6 @@ def main():
                 thresholds[idx] = int((hi + lo) / 2)
 
     print("\nCalibration complete!\n")
-    print("// Paste this into your firmware (.ino):")
-
 
     if mode == 'g':
         # Single global threshold: average of per-square midpoints
@@ -193,16 +225,21 @@ def main():
             raise SystemExit("No thresholds collected to compute a global value.")
         global_threshold = int(round(statistics.mean(nonzero)))
 
-        print(f"const unsigned short THRESHOLD = {global_threshold};")
-
+        print(f"\nApplying global threshold ({global_threshold}) to Liboard...")
+        push_threshold_global(ser, global_threshold)
+        
     else:
-        print("unsigned short THRESHOLD[64] = {")
-        for r in range(8):
-            row = ', '.join(f"{t:4}" for t in thresholds[r*8:(r+1)*8])
-            file_letter = FILES[r] # A..H
-            squares_range = f"{file_letter}1-{file_letter}8"
-            print(f"  // {squares_range}\n {row},")
-        print("};")
+        # Output in A1–H1, A2–H2, … A8–H8 order
+        individual_thresholds = []
+        for rank in range(8):      # ranks 1–8
+            for file in range(8):  # files A–H
+                idx = rank * 8 + file
+                individual_thresholds.append(thresholds[idx])
+    
+        print("\nApplying the following thresholds to Liboard...:")
+        print(",".join(str(v) for v in individual_thresholds))
+        push_threshold_individual(ser, individual_thresholds)
+
 
     ser.close()
     print("\nAll done.")
