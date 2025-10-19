@@ -58,6 +58,43 @@ def _read_snapshot(ser: serial.Serial, timeout_s: float = 1.0, retries: int = 3)
 
     raise TimeoutError("Failed to get CSV snapshot after multiple retries")
 
+def _read_thresholds(ser: serial.Serial, timeout_s: float = 1.0, retries: int = 3):
+    """Request current thresholds with '!' and parse either 1 (global) or 64 (per-square) ints.
+       Returns (values, is_global)."""
+    for attempt in range(retries):
+        try:
+            ser.reset_input_buffer()
+            ser.write(b'!')
+            ser.flush()
+
+            end = time.time() + timeout_s
+            while time.time() < end:
+                line = ser.readline()
+                if not line:
+                    continue
+                try:
+                    text = line.decode('ascii', errors='strict').strip()
+                except UnicodeDecodeError:
+                    continue
+
+                parts = [p for p in text.split(',') if p != '']
+                # Accept either a single integer (global) or 64 integers (per-square)
+                if len(parts) not in (1, 64):
+                    continue
+
+                try:
+                    vals = [int(p) for p in parts]
+                except ValueError:
+                    continue
+
+                is_global = (len(vals) == 1)
+                return vals, is_global
+        except Exception:
+            pass
+        print("  [!] Threshold read timeout — retrying...")
+        time.sleep(1.0)
+
+    raise TimeoutError("Failed to get thresholds after multiple retries")
 
 def _average_readings(ser: serial.Serial, samples: int, delay_s: float) -> List[int]:
     """Average N snapshots."""
@@ -121,13 +158,6 @@ def main():
                         help='Comma-separated squares to calibrate (e.g. "a1,c4,d5"). If omitted, calibrates by ranks (A1–H1, A2–H2, ...).')
     args = parser.parse_args()
 
-    # Choose mode
-    mode = input("Calibration mode — [G]lobal single threshold or [I]ndividual per-square? [G/i]: ").strip().lower()
-    if mode == '':
-        mode = 'g'
-    if mode not in ('g', 'i'):
-        raise SystemExit("Please enter 'g' for global or 'i' for individual.")
-
     # Defaults for averaging snapshots
     n_samples = 15
     delay_s = 0.05
@@ -139,6 +169,26 @@ def main():
         raise SystemExit(f"Could not open port {args.port}: {e}")
 
     time.sleep(2.0)
+
+    # Detect board threshold mode
+    try:
+        th_vals, board_is_global = _read_thresholds(ser)
+    except Exception as e:
+        print(f"[WARN] Could not read current thresholds: {e}")
+        th_vals, board_is_global = ([0]*64, False)  # conservative fallback
+
+    # Apply mode based on Liboard firmware
+    mode = 'g' if board_is_global else 'i'
+    print(f"Detected board mode: {'GLOBAL' if board_is_global else 'PER-SQUARE'}")
+
+    # Enforce: if board is global, disallow any individual-square calibration
+    if board_is_global and args.squares.strip():
+        raise SystemExit(
+            "This board is configured for a single GLOBAL threshold; "
+            "individual-square selection (-s) is not supported. "
+            "Recompile firmware with per-square thresholds or remove -s."
+        )
+
     input("\nMake sure the board is COMPLETELY EMPTY, then press Enter...")
     print("Collecting baseline (unoccupied) readings...")
     empty = _average_readings(ser, n_samples, delay_s)
@@ -147,7 +197,8 @@ def main():
     sounddevice.wait()
 
     occupied = [0] * 64
-    thresholds = [0] * 64
+    # Use current thresholds programmed in Liboard
+    thresholds = [th_vals[0]] * 64 if board_is_global else list(th_vals)
 
     # If specific squares were requested, calibrate only those, otherwise do ranks.
     if args.squares.strip():
@@ -236,7 +287,7 @@ def main():
                 idx = rank * 8 + file
                 individual_thresholds.append(thresholds[idx])
     
-        print("\nApplying the following thresholds to Liboard...:")
+        print("\nApplying the following thresholds to Liboard...")
         print(",".join(str(v) for v in individual_thresholds))
         push_threshold_individual(ser, individual_thresholds)
 
