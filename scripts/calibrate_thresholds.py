@@ -170,6 +170,14 @@ def main():
 
     time.sleep(2.0)
 
+    # Enter quiet mode to turn of Bitboard output
+    try:
+        ser.reset_input_buffer()
+        ser.write(b'q') 
+        ser.flush()
+    except Exception:
+        pass
+
     # Detect board threshold mode
     try:
         th_vals, board_is_global = _read_thresholds(ser)
@@ -291,6 +299,13 @@ def main():
         print(",".join(str(v) for v in individual_thresholds))
         push_threshold_individual(ser, individual_thresholds)
 
+    # Exit Quiet Mode to resume bitboard output
+    try:
+        ser.reset_input_buffer()
+        ser.write(b'q')
+        ser.flush()
+    except Exception:
+        pass
 
     ser.close()
     print("\nAll done.")
