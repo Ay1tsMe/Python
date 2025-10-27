@@ -240,8 +240,6 @@ def main():
 
             print(f"  {sq}: Empty: {empty[idx]:>4} | Occupied: {occupied[idx]:>4}")
 
-            input("Remove the piece, then press Enter to continue...")
-
             hi, lo = max(empty[idx], occupied[idx]), min(empty[idx], occupied[idx])
             thresholds[idx] = int((hi + lo) / 2)
 
@@ -264,9 +262,6 @@ def main():
                 sq_label = f"{FILES[j]}{rank}"
                 occupied[idx] = vals[idx]
                 print(f"  {sq_label}: Empty: {empty[idx]:>4} | Occupied: {occupied[idx]:>4}")
-
-            # ask user to clear this rank before proceeding
-            input("Remove pieces from this rank, then press Enter to continue...")
 
             # Compute thresholds for this rank
             for idx in indices:
